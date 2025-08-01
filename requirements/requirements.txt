@@ -4,4 +4,4 @@ html2text==2024.2.26
 beautifulsoup4==4.13.3
 requests==2.32.3
 pydub==0.25.1
-SQLAlchemy==2.0.39
+SQLAlchemy==2.0.42
