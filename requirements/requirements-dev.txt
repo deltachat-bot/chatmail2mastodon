@@ -1,9 +1,0 @@
--r requirements.txt
--r requirements-test.txt
-black==25.1.0
-mypy==1.15.0
-isort==6.0.1
-pylint==3.3.6
-pylama==8.4.1
-types-requests==2.32.0.20250306
-setuptools

@@ -1,4 +1,2 @@
-include simplebot_mastodon/mastodon-logo.png
-include LICENSE
-include README.rst
-include CHANGELOG.md
+include */mastodon-logo.png
+include */*.xdc

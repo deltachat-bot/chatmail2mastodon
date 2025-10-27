@@ -1,16 +1,64 @@
 [build-system]
-requires = [
-  "setuptools>=45",
-  "setuptools-scm>=6.2",
-  "wheel",
-]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
 build-backend = "setuptools.build_meta"
 
+[project]
+name = "chatmail2mastodon"
+description = "Mastodon/DeltaChat bridge"
+dynamic = ["version"]
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["deltachat", "bot", "mastodon", "chatmail"]
+authors = [
+  {name = "adbenitez", email = "adb@arcanechat.me"},
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
+]
+dependencies = [
+    "deltabot-cli>=7.1.0,<8.0",
+    "Mastodon.py>=2.1.4",
+    "html2text>=2024.2.26",
+    "beautifulsoup4>=4.13.4,<5.0",
+    "requests>=2.32.4,<3.0",
+    "pydub>=0.25.1",
+    "SQLAlchemy>=2.0.41,<3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/deltachat-bot/chatmail2mastodon"
+
+[project.optional-dependencies]
+dev = [
+  "black",
+  "mypy",
+  "isort",
+  "pylint",
+  "pylama",
+  "pytest",
+  "setuptools",
+  "types-requests",
+]
+
+[project.scripts]
+chatmail2mastodon = "chatmail2mastodon:main"
+
 [tool.setuptools_scm]
-write_to = "simplebot_mastodon/_version.py"
+# can be empty if no extra settings are needed, presence enables setuptools_scm
+write_to = "chatmail2mastodon/_version.py"
+
+[tool.setuptools]
+packages = [ "chatmail2mastodon" ]
+zip-safe = false
+include-package-data = true
 
 [tool.isort]
 profile = "black"
+
+[tool.black]
+line-length = 100
 
 [tool.mypy]
 ignore_missing_imports = "True"
