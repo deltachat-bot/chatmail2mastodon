@@ -2,16 +2,17 @@
 
 import functools
 import mimetypes
-import os
 import re
 import time
+from argparse import Namespace
+from contextlib import contextmanager
 from enum import Enum
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import requests
 from bs4 import BeautifulSoup
-from deltachat import Chat, Message
+from deltachat2 import Bot, ChatType, JsonRpcError, MsgData, SpecialContactId
 from html2text import html2text
 from mastodon import (
     AttribAccessDict,
@@ -21,7 +22,6 @@ from mastodon import (
     MastodonUnauthorizedError,
 )
 from pydub import AudioSegment
-from simplebot.bot import DeltaBot, Replies
 
 from .orm import Account, Client, DmChat, session_scope
 
@@ -53,52 +53,52 @@ v2emoji = {
 }
 
 
-def toots2texts(bot: DeltaBot, toots: Iterable) -> Generator:
-    prefix = getdefault(bot, "cmd_prefix", "")
+def toots2texts(toots: Iterable) -> Generator[str, None, None]:
     for toot in toots:
-        reply = toot2reply(prefix, toot)
-        text = reply.get("text", "")
-        if reply.get("filename"):
+        reply = toot2reply(toot)
+        text = reply.text or ""
+        if reply.file:
             if not text.startswith("http"):
                 text = "\n" + text
-            text = reply["filename"] + "\n" + text
-        sender = reply.get("sender", "")
+            text = reply.file + "\n" + text
+        sender = reply.override_sender_name or ""
         if sender:
             text = f"{sender}:\n{text}"
         if text:
             yield text
 
 
-def toots2replies(bot: DeltaBot, toots: Iterable) -> Generator:
-    prefix = getdefault(bot, "cmd_prefix", "")
+def toots2replies(bot: Bot, toots: Iterable) -> Generator:
     for toot in toots:
-        reply = toot2reply(prefix, toot)
-        if reply.get("filename"):
+        reply = toot2reply(toot)
+        if reply.file:
             try:
-                reply["filename"] = download_file(bot, reply["filename"])
+                with download_file(reply.file) as path:
+                    reply.file = path
+                    yield reply
+                return
             except Exception as ex:
                 bot.logger.exception(ex)
-                text = reply.get("text", "")
+                text = reply.text or ""
                 if not text.startswith("http"):
                     text = "\n" + text
-                reply["text"] = reply["filename"] + "\n" + text
-                del reply["filename"]
-        if reply:
-            yield reply
+                reply.text = reply.file + "\n" + text
+                reply.file = None
+        yield reply
 
 
-def toot2reply(prefix: str, toot: AttribAccessDict) -> dict:
+def toot2reply(toot: AttribAccessDict) -> MsgData:
     text = ""
-    reply = {}
+    reply = MsgData()
     if toot.reblog:
-        reply["sender"] = _get_name(toot.reblog.account)
+        reply.override_sender_name = _get_name(toot.reblog.account)
         text += f"🔁 {_get_name(toot.account)}\n\n"
         toot = toot.reblog
     else:
-        reply["sender"] = _get_name(toot.account)
+        reply.override_sender_name = _get_name(toot.account)
 
     if toot.media_attachments:
-        reply["filename"] = toot.media_attachments.pop(0).url
+        reply.file = toot.media_attachments.pop(0).url
         text += "\n".join(media.url for media in toot.media_attachments) + "\n\n"
 
     soup = BeautifulSoup(toot.content, "html.parser")
@@ -115,30 +115,29 @@ def toot2reply(prefix: str, toot: AttribAccessDict) -> dict:
     text += soup.get_text()
 
     text += f"\n\n[{v2emoji[toot.visibility]} {toot.created_at.strftime(STRFORMAT)}]({toot.url})\n"
-    text += f"↩️ /{prefix}reply_{toot.id}\n"
-    text += f"⭐ /{prefix}star_{toot.id}\n"
+    text += f"↩️ /reply_{toot.id}\n"
+    text += f"⭐ /star_{toot.id}\n"
     if toot.visibility in (Visibility.PUBLIC, Visibility.UNLISTED):
-        text += f"🔁 /{prefix}boost_{toot.id}\n"
-    text += f"⏫ /{prefix}open_{toot.id}\n"
-    text += f"👤 /{prefix}profile_{toot.account.id}\n"
+        text += f"🔁 /boost_{toot.id}\n"
+    text += f"⏫ /open_{toot.id}\n"
+    text += f"👤 /profile_{toot.account.id}\n"
 
-    reply["text"] = text
+    reply.text = text
     return reply
 
 
-def notif2replies(toots: Iterable) -> Generator:
+def notif2replies(toots: Iterable) -> Generator[MsgData, None, None]:
     for toot in toots:
-        reply = notif2reply(toot)
-        if reply:
+        if reply := notif2reply(toot):
             yield reply
 
 
-def notif2reply(toots: list[AttribAccessDict]) -> dict:
+def notif2reply(toots: list[AttribAccessDict]) -> Optional[MsgData]:
     toot_type = toots[0].type
     name = ", ".join(_get_name(t.account) for t in toots)
 
     if toot_type == "follow":
-        return {"text": f"👤 {name} followed you."}
+        return MsgData(text=f"👤 {name} followed you.")
 
     if toot_type == "reblog":
         text = f"🔁 {name} boosted your toot."
@@ -146,11 +145,11 @@ def notif2reply(toots: list[AttribAccessDict]) -> dict:
         text = f"⭐ {name} favorited your toot."
     else:  # unsupported type
         assert toot_type != "mention"  # mentions are handled with toots2replies
-        return {}
+        return None
 
     toot = toots[0].status
     text += f"\n\n[{v2emoji[toot.visibility]} {toot.created_at.strftime(STRFORMAT)}]({toot.url})"
-    return {"text": text, "html": toot.content}
+    return MsgData(text=text, html=toot.content)
 
 
 def get_extension(resp: requests.Response) -> str:
@@ -181,17 +180,19 @@ def get_user(m, user_id) -> Any:
     return user
 
 
-def download_file(bot: DeltaBot, url: str, default_extension="") -> str:
-    """Download a file and save the file in the bot's blobs folder."""
+@contextmanager
+def download_file(url: str, default_extension="") -> Generator[str, None, None]:
+    """Download a blob and save it in temporary file."""
     with web.get(url) as resp:
         ext = get_extension(resp) or default_extension
-        with NamedTemporaryFile(
-            dir=bot.account.get_blobdir(), suffix=ext, delete=False
-        ) as temp_file:
-            path = temp_file.name
-        with open(path, "wb") as file:
-            file.write(resp.content)
-    return path
+        content = resp.content
+    with NamedTemporaryFile(suffix=ext) as temp_file:
+        temp_file.write(content)
+        temp_file.flush()
+        try:
+            yield temp_file.name
+        except GeneratorExit:
+            pass
 
 
 def normalize_url(url: str) -> str:
@@ -202,22 +203,7 @@ def normalize_url(url: str) -> str:
     return url.rstrip("/")
 
 
-def getdefault(bot: DeltaBot, key: str, value: Optional[str] = None) -> str:
-    val = bot.get(key, scope=_scope)
-    if val is None and value is not None:
-        bot.set(key, value, scope=_scope)
-        val = value
-    return val
-
-
-def get_database_path(bot: DeltaBot) -> str:
-    path = os.path.join(os.path.dirname(bot.account.db_path), _scope)
-    if not os.path.exists(path):
-        os.makedirs(path)
-    return os.path.join(path, "sqlite.db")
-
-
-def get_profile(bot: DeltaBot, masto: Mastodon, username: Optional[str] = None) -> str:
+def get_profile(masto: Mastodon, username: Optional[str] = None) -> str:
     me = masto.me()
     if not username:
         user = me
@@ -233,7 +219,11 @@ def get_profile(bot: DeltaBot, masto: Mastodon, username: Optional[str] = None) 
     if fields:
         text += fields + "\n\n"
     text += html2text(user.note).strip()
-    text += f"\n\nToots: {user.statuses_count}\nFollowing: {user.following_count}\nFollowers: {user.followers_count}"
+    text += (
+        f"\n\nToots: {user.statuses_count}\n"
+        f"Following: {user.following_count}\n"
+        f"Followers: {user.followers_count}"
+    )
     if user.id != me.id:
         rel = masto.account_relationships(user)[0]
         if rel["followed_by"]:
@@ -245,28 +235,28 @@ def get_profile(bot: DeltaBot, masto: Mastodon, username: Optional[str] = None) 
             action = "unfollow"
         else:
             action = "follow"
-        prefix = getdefault(bot, "cmd_prefix", "")
-        text += f"\n/{prefix}{action}_{user.id}"
+        text += f"\n/{action}_{user.id}"
         action = "unmute" if rel["muting"] else "mute"
-        text += f"\n/{prefix}{action}_{user.id}"
+        text += f"\n/{action}_{user.id}"
         action = "unblock" if rel["blocking"] else "block"
-        text += f"\n/{prefix}{action}_{user.id}"
-        text += f"\n/{prefix}dm_{user.id}"
+        text += f"\n/{action}_{user.id}"
+        text += f"\n/dm_{user.id}"
     text += TOOT_SEP
     toots = masto.account_statuses(user, limit=10)
-    text += TOOT_SEP.join(toots2texts(bot, reversed(toots)))
+    text += TOOT_SEP.join(toots2texts(reversed(toots)))
     return text
 
 
-def listen_to_mastodon(bot: DeltaBot) -> None:
+def listen_to_mastodon(bot: Bot, args: Namespace) -> None:
     while True:
         try:
-            _check_mastodon(bot)
+            _check_mastodon(bot, args)
         except Exception as ex:
             bot.logger.exception(ex)
 
 
-def _check_mastodon(bot: DeltaBot) -> None:
+def _check_mastodon(bot: Bot, args: Namespace) -> None:
+    accid = bot.rpc.get_all_account_ids()[0]
     while True:
         bot.logger.debug("Checking Mastodon")
         instances: dict = {}
@@ -313,12 +303,12 @@ def _check_mastodon(bot: DeltaBot) -> None:
                 try:
                     masto = get_mastodon(key, token)
                     _check_notifications(
-                        bot, masto, addr, notif_chat, last_notif, muted_notif
+                        bot, accid, masto, addr, notif_chat, last_notif, muted_notif
                     )
                     if muted_home:
                         bot.logger.debug(f"{addr}: Ignoring Home timeline (muted)")
                     else:
-                        _check_home(bot, masto, addr, home_chat, last_home)
+                        _check_home(bot, accid, masto, addr, home_chat, last_home)
                     bot.logger.debug(f"{addr}: Done checking account")
                 except MastodonUnauthorizedError as ex:
                     bot.logger.exception(ex)
@@ -332,26 +322,26 @@ def _check_mastodon(bot: DeltaBot) -> None:
                             session.delete(acc)
                     for chat_id in chats:
                         try:
-                            bot.get_chat(chat_id).remove_contact(bot.self_contact)
-                        except ValueError:
+                            bot.rpc.leave_group(accid, chat_id)
+                        except JsonRpcError:
                             pass
 
-                    bot.get_chat(addr).send_text(
-                        f"❌ ERROR Your account was logged out: {ex}"
-                    )
+                    contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
+                    chatid = bot.rpc.create_chat_by_contact_id(accid, contactid)
+                    text = f"❌ ERROR Your account was logged out: {ex}"
+                    bot.rpc.send_msg(accid, chatid, MsgData(text=text))
                 except (MastodonNetworkError, MastodonServerError) as ex:
                     bot.logger.exception(ex)
                 except Exception as ex:  # noqa
                     bot.logger.exception(ex)
-                    bot.get_chat(addr).send_text(
-                        f"❌ ERROR while checking your account: {ex}"
-                    )
+                    contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
+                    chatid = bot.rpc.create_chat_by_contact_id(accid, contactid)
+                    text = f"❌ ERROR while checking your account: {ex}"
+                    bot.rpc.send_msg(accid, chatid, MsgData(text=text))
             time.sleep(2)
         elapsed = int(time.time() - start_time)
-        delay = max(int(getdefault(bot, "delay")) - elapsed, 10)
-        bot.logger.info(
-            f"Done checking {total_acc} accounts, sleeping for {delay} seconds..."
-        )
+        delay = max(args.interval - elapsed, 10)
+        bot.logger.info(f"Done checking {total_acc} accounts, sleeping for {delay} seconds...")
         time.sleep(delay)
 
 
@@ -410,44 +400,45 @@ def get_mastodon(api_url: str, token: Optional[str] = None, **kwargs) -> Mastodo
     )
 
 
-def get_mastodon_from_msg(message: Message) -> Optional[Mastodon]:
+def get_mastodon_from_msg(bot, accid, msg) -> Optional[Mastodon]:
     api_url, token = "", ""
+    chat = bot.rpc.get_basic_chat_info(accid, msg.chat_id)
     with session_scope() as session:
-        acc = get_account_from_msg(message, session)
+        acc = get_account_from_msg(chat, msg, session)
         if acc:
             api_url, token = acc.url, acc.token
     return get_mastodon(api_url, token) if api_url else None
 
 
-def get_account_from_msg(message: Message, session) -> Optional[Account]:
-    acc = get_account_from_chat(message.chat, session)
+def get_account_from_msg(chat, msg, session) -> Optional[Account]:
+    acc = get_account_from_chat(chat, session)
     if not acc:
-        addr = message.get_sender_contact().addr
+        addr = msg.sender.address
         acc = session.query(Account).filter_by(addr=addr).first()
     return acc
 
 
-def get_account_from_chat(chat: Chat, session) -> Optional[Account]:
-    if chat.is_multiuser():
-        acc = (
-            session.query(Account)
-            .filter((Account.home == chat.id) | (Account.notifications == chat.id))
-            .first()
-        )
-        if not acc:
-            dmchat = session.query(DmChat).filter_by(chat_id=chat.id).first()
-            if dmchat:
-                acc = dmchat.account
-    else:
-        acc = None
+def get_account_from_chat(chat, session) -> Optional[Account]:
+    if chat.chat_type == ChatType.SINGLE:
+        return None
+
+    acc = (
+        session.query(Account)
+        .filter((Account.home == chat.id) | (Account.notifications == chat.id))
+        .first()
+    )
+    if not acc:
+        dmchat = session.query(DmChat).filter_by(chat_id=chat.id).first()
+        if dmchat:
+            acc = dmchat.account
     return acc
 
 
-def account_action(action: str, payload: str, message: Message) -> str:
+def account_action(action: str, payload: str, bot, accid, msg) -> str:
     if not payload:
         return "❌ Wrong usage"
 
-    masto = get_mastodon_from_msg(message)
+    masto = get_mastodon_from_msg(bot, accid, msg)
     if masto:
         if payload.isdigit():
             user_id = payload
@@ -467,63 +458,63 @@ def _get_name(macc) -> str:
     return isbot + macc.acct
 
 
-def _handle_dms(dms: list, bot: DeltaBot, addr: str, notif_chat: int) -> None:
+def _handle_dms(bot: Bot, accid: int, dms: list, addr: str, notif_chat: int) -> None:
     def _get_chat_id(acct) -> int:
         with session_scope() as session:
-            dmchat = (
-                session.query(DmChat).filter_by(acc_addr=addr, contact=acct).first()
-            )
+            dmchat = session.query(DmChat).filter_by(acc_addr=addr, contact=acct).first()
             if dmchat:
                 chat_id = dmchat.chat_id
             else:
                 chat_id = 0
         return chat_id
 
-    prefix = getdefault(bot, "cmd_prefix", "")
-    chats: Dict[str, int] = {}
-    replies = Replies(bot, bot.logger)
-    for dm in reversed(dms):
-        reply = toot2reply(prefix, dm)
-        if reply.get("filename"):
-            try:
-                reply["filename"] = download_file(bot, reply["filename"])
-            except Exception as ex:
-                bot.logger.exception(ex)
-                text = reply.get("text", "")
-                if not text.startswith("http"):
-                    text = "\n" + text
-                reply["text"] = reply["filename"] + "\n" + text
-        if not reply:
-            continue
-
+    def send_reply(dm, reply: MsgData) -> None:
         acct = dm.account.acct
         chat_id = chats.get(acct, 0)
         if not chat_id:
             chat_id = chats[acct] = _get_chat_id(acct)
 
-        if chat_id:
-            chat = bot.get_chat(chat_id)
-        else:
-            chat = bot.create_group(acct, bot.get_chat(notif_chat).get_contacts())
-            chats[acct] = chat.id
+        if not chat_id:
+            chat_id = bot.rpc.create_group_chat(accid, acct, False)
+            chats[acct] = chat_id
+            for conid in bot.rpc.get_chat_contacts(accid, notif_chat):
+                if conid != SpecialContactId.SELF:
+                    bot.rpc.add_contact_to_chat(accid, chat_id, conid)
+
             with session_scope() as session:
-                session.add(DmChat(chat_id=chat.id, contact=acct, acc_addr=addr))
+                session.add(DmChat(chat_id=chat_id, contact=acct, acc_addr=addr))
 
             try:
-                path = download_file(bot, dm.account.avatar_static, ".jpg")
-                chat.set_profile_image(path)
-            except ValueError as err:
-                bot.logger.exception(err)
-                os.remove(path)
+                url = dm.account.avatar_static
+                with download_file(url, ".jpg") as path:
+                    bot.rpc.set_chat_profile_image(accid, chat_id, path)
             except Exception as err:
                 bot.logger.exception(err)
 
-        replies.add(**reply, chat=chat)
-        replies.send_reply_messages()
+        bot.rpc.send_msg(accid, chat_id, reply)
+
+    chats: Dict[str, int] = {}
+    for dm in reversed(dms):
+        reply = toot2reply(dm)
+        if reply.file:
+            try:
+                with download_file(bot, reply.file) as path:
+                    reply.file = path
+                    send_reply(dm, reply)
+                    continue
+            except Exception as ex:
+                bot.logger.exception(ex)
+                text = reply.text or ""
+                if not text.startswith("http"):
+                    text = "\n" + text
+                reply.text = reply.file + "\n" + text
+                reply.file = None
+        send_reply(dm, reply)
 
 
 def _check_notifications(
-    bot: DeltaBot,
+    bot: Bot,
+    accid: int,
     masto: Mastodon,
     addr: str,
     notif_chat: int,
@@ -552,11 +543,9 @@ def _check_notifications(
 
     if dms:
         bot.logger.debug(f"{addr}: Direct Messages: {len(dms)} new entries")
-        _handle_dms(dms, bot, addr, notif_chat)
+        _handle_dms(bot, accid, dms, addr, notif_chat)
 
-    bot.logger.debug(
-        f"{addr}: Notifications: {len(notifications)} new entries (last_id={last_id})"
-    )
+    bot.logger.debug(f"{addr}: Notifications: {len(notifications)} new entries (last_id={last_id})")
     if notifications:
         reblogs: dict[str, AttribAccessDict] = {}
         favs: dict[str, AttribAccessDict] = {}
@@ -574,18 +563,15 @@ def _check_notifications(
         notifs = [*reblogs.values(), *favs.values()]
         if follows:
             notifs.append(follows)
-        chat = bot.get_chat(notif_chat)
-        replies = Replies(bot, bot.logger)
+
         for reply in notif2replies(notifs):
-            replies.add(**reply, chat=chat)
-            replies.send_reply_messages()
+            bot.rpc.send_msg(accid, notif_chat, reply)
         for reply in toots2replies(bot, mentions):
-            replies.add(**reply, chat=chat)
-            replies.send_reply_messages()
+            bot.rpc.send_msg(accid, notif_chat, reply)
 
 
 def _check_home(
-    bot: DeltaBot, masto: Mastodon, addr: str, home_chat: int, last_id: str
+    bot: Bot, accid: int, masto: Mastodon, addr: str, home_chat: int, last_id: str
 ) -> None:
     me = masto.me()
     bot.logger.debug(f"{addr}: Getting Home timeline (last_id={last_id})")
@@ -594,13 +580,8 @@ def _check_home(
         with session_scope() as session:
             acc = session.query(Account).filter_by(addr=addr).first()
             acc.last_home = last_id = toots[0].id
-        toots = [
-            toot for toot in toots if me.id not in [acc.id for acc in toot.mentions]
-        ]
+        toots = [toot for toot in toots if me.id not in [acc.id for acc in toot.mentions]]
     bot.logger.debug(f"{addr}: Home: {len(toots)} new entries (last_id={last_id})")
     if toots:
-        chat = bot.get_chat(home_chat)
-        replies = Replies(bot, bot.logger)
         for reply in toots2replies(bot, reversed(toots)):
-            replies.add(**reply, chat=chat)
-            replies.send_reply_messages()
+            bot.rpc.send_msg(accid, home_chat, reply)

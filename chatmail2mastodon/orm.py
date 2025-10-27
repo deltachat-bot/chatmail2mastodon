@@ -29,9 +29,7 @@ class Account(Base):
     muted_home = Column(Boolean)
     muted_notif = Column(Boolean)
 
-    dm_chats = relationship(
-        "DmChat", backref="account", cascade="all, delete, delete-orphan"
-    )
+    dm_chats = relationship("DmChat", backref="account", cascade="all, delete, delete-orphan")
 
 
 class DmChat(Base):
@@ -69,7 +67,7 @@ def session_scope():
             session.close()
 
 
-def init(path: str, debug: bool = False) -> None:
+def initdb(path: str, debug: bool = False) -> None:
     """Initialize engine."""
     engine = create_engine(path, echo=debug)
     Base.metadata.create_all(engine)
