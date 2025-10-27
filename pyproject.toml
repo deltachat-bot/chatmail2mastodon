@@ -18,13 +18,13 @@ classifiers = [
   "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)",
 ]
 dependencies = [
-    "deltabot-cli>=7.1.0,<8.0",
+    "deltabot-cli>=8.0.0,<9.0",
     "Mastodon.py>=2.1.4",
-    "html2text>=2024.2.26",
-    "beautifulsoup4>=4.13.4,<5.0",
+    "html2text>=2025.4.15",
+    "beautifulsoup4>=4.14.2,<5.0",
     "requests>=2.32.4,<3.0",
     "pydub>=0.25.1",
-    "SQLAlchemy>=2.0.41,<3.0",
+    "SQLAlchemy>=2.0.43,<3.0",
 ]
 
 [project.urls]
