@@ -1,6 +1,6 @@
 # Mastodon Bridge
 
-[![Latest Release](https://img.shields.io/pypi/v/pixelsocial.svg)](https://pypi.org/project/chatmail2mastodon)
+[![Latest Release](https://img.shields.io/pypi/v/chatmail2mastodon.svg)](https://pypi.org/project/chatmail2mastodon)
 [![CI](https://github.com/deltachat-bot/chatmail2mastodon/actions/workflows/python-ci.yml/badge.svg)](https://github.com/deltachat-bot/chatmail2mastodon/actions/workflows/python-ci.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
