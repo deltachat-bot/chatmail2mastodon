@@ -100,7 +100,7 @@ def on_info_msg(bot: Bot, accid: int, event: NewMsgEvent) -> None:
         return
 
     url = ""
-    addr = ""
+    conid = 0
     chats: list[int] = []
     with session_scope() as session:
         acc = (
@@ -110,7 +110,7 @@ def on_info_msg(bot: Bot, accid: int, event: NewMsgEvent) -> None:
         )
         if acc:
             url = acc.url
-            addr = acc.addr
+            conid = acc.id
             chats.extend(dmchat.chat_id for dmchat in acc.dm_chats)
             chats.append(acc.home)
             chats.append(acc.notifications)
@@ -128,8 +128,7 @@ def on_info_msg(bot: Bot, accid: int, event: NewMsgEvent) -> None:
             pass
 
     if url:
-        contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
-        chatid = bot.rpc.create_chat_by_contact_id(accid, contactid)
+        chatid = bot.rpc.create_chat_by_contact_id(accid, conid)
         text = f"✔️ You logged out from: {url}"
         bot.rpc.send_msg(accid, chatid, MsgData(text=text))
 
@@ -146,9 +145,9 @@ def on_msg(bot: Bot, accid: int, event: NewMsgEvent) -> None:
 
     if chat.chat_type == ChatType.SINGLE:
         bot.rpc.markseen_msgs(accid, [msg.id])
-        addr = msg.sender.address
+        conid = msg.from_id
         with session_scope() as session:
-            auth = session.query(OAuth).filter_by(addr=addr).first()
+            auth = session.query(OAuth).filter_by(id=conid).first()
             if not auth:
                 text = "❌ To publish messages you must send them in your Home chat."
                 reply = MsgData(text=text, quoted_message_id=msg.id)
@@ -163,9 +162,9 @@ def on_msg(bot: Bot, accid: int, event: NewMsgEvent) -> None:
         m = get_mastodon(url, client_id=client_id, client_secret=client_secret)
         try:
             m.log_in(code=msg.text.strip())
-            _login(bot, accid, chatid, addr, user, m)
+            _login(bot, accid, chatid, conid, user, m)
             with session_scope() as session:
-                session.delete(session.query(OAuth).filter_by(addr=addr).first())
+                session.delete(session.query(OAuth).filter_by(id=conid).first())
         except Exception as err:  # noqa
             bot.logger.exception(err)
             text = "❌ Authentication failed, generate another authorization code and send it here"
@@ -222,11 +221,11 @@ def _login_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
             return
         api_url, email, passwd = args
     api_url = normalize_url(api_url)
-    addr = msg.sender.address
+    conid = msg.from_id
 
     user = ""
     with session_scope() as session:
-        acc = session.query(Account).filter_by(addr=addr).first()
+        acc = session.query(Account).filter_by(id=conid).first()
         if acc:
             if acc.url != api_url:
                 text = "❌ You are already logged in."
@@ -240,7 +239,7 @@ def _login_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
 
     if email:
         m.log_in(email, passwd)
-        _login(bot, accid, chatid, addr, user, m)
+        _login(bot, accid, chatid, conid, user, m)
     else:
         if client_id is None:
             text = "❌ Server doesn't seem to support OAuth."
@@ -248,11 +247,11 @@ def _login_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
             bot.rpc.send_msg(accid, chatid, reply)
             return
         with session_scope() as session:
-            auth = session.query(OAuth).filter_by(addr=addr).first()
+            auth = session.query(OAuth).filter_by(id=conid).first()
             if not auth:
                 session.add(
                     OAuth(
-                        addr=addr,
+                        id=conid,
                         url=api_url,
                         user=user,
                         client_id=client_id,
@@ -274,14 +273,14 @@ def _login_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
 
 
 def _login(
-    bot: Bot, accid: int, chatid: int, addr: str, user: str, masto: mastodon.Mastodon
+    bot: Bot, accid: int, chatid: int, conid: int, user: str, masto: mastodon.Mastodon
 ) -> None:
     uname = masto.me().acct.lower()
 
     if user:
         if user == uname:
             with session_scope() as session:
-                acc = session.query(Account).filter_by(addr=addr).first()
+                acc = session.query(Account).filter_by(id=conid).first()
                 acc.token = masto.access_token
                 text = "✔️ You refreshed your credentials."
                 bot.rpc.send_msg(accid, chatid, MsgData(text=text))
@@ -299,14 +298,13 @@ def _login(
     url = api_url.split("://", maxsplit=1)[-1]
     hgroup = bot.rpc.create_group_chat(accid, f"Home ({url})", False)
     ngroup = bot.rpc.create_group_chat(accid, f"Notifications ({url})", False)
-    contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
-    bot.rpc.add_contact_to_chat(accid, hgroup, contactid)
-    bot.rpc.add_contact_to_chat(accid, ngroup, contactid)
+    bot.rpc.add_contact_to_chat(accid, hgroup, conid)
+    bot.rpc.add_contact_to_chat(accid, ngroup, conid)
 
     with session_scope() as session:
         session.add(
             Account(
-                addr=addr,
+                id=conid,
                 user=uname,
                 url=api_url,
                 token=masto.access_token,
@@ -334,10 +332,10 @@ def _login(
 @cli.on(events.NewMessage(command="/logout"))
 def _logout_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
     msg = event.msg
-    addr = msg.sender.address
+    conid = msg.from_id
     chats: list[int] = []
     with session_scope() as session:
-        acc = session.query(Account).filter_by(addr=addr).first()
+        acc = session.query(Account).filter_by(id=conid).first()
         if acc:
             text = f"✔️ You logged out from: {acc.url}"
             chats.extend(dmchat.chat_id for dmchat in acc.dm_chats)
@@ -352,8 +350,7 @@ def _logout_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
             bot.rpc.leave_group(accid, chatid)
         except JsonRpcError:
             pass
-    contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
-    chatid = bot.rpc.create_chat_by_contact_id(accid, contactid)
+    chatid = bot.rpc.create_chat_by_contact_id(accid, conid)
     bot.rpc.send_msg(accid, chatid, MsgData(text=text))
 
 
@@ -428,7 +425,7 @@ def _dm_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
         with session_scope() as session:
             acc = get_account_from_msg(chat, msg, session)
             assert acc
-            dmchat = session.query(DmChat).filter_by(acc_addr=acc.addr, contact=user.acct).first()
+            dmchat = session.query(DmChat).filter_by(contactid=acc.id, contact=user.acct).first()
             if dmchat:
                 text = "❌ Chat already exists, send messages here"
                 bot.rpc.send_msg(accid, dmchat.chat_id, MsgData(text=text))
@@ -437,7 +434,7 @@ def _dm_cmd(bot: Bot, accid: int, event: NewMsgEvent) -> None:
             for conid in bot.rpc.get_chat_contacts(accid, acc.notifications):
                 if conid != SpecialContactId.SELF:
                     bot.rpc.add_contact_to_chat(accid, chatid, conid)
-            session.add(DmChat(chat_id=chatid, contact=user.acct, acc_addr=acc.addr))
+            session.add(DmChat(chat_id=chatid, contact=user.acct, contactid=acc.id))
 
         try:
             with download_file(user.avatar_static, ".jpg") as path:

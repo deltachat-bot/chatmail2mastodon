@@ -2,23 +2,17 @@ from contextlib import contextmanager
 from threading import Lock
 
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, create_engine
-from sqlalchemy.ext.declarative import declarative_base, declared_attr
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 
-
-class Base:
-    @declared_attr
-    def __tablename__(self):
-        return self.__name__.lower()
-
-
-Base = declarative_base(cls=Base)
+Base = declarative_base()
 _Session = sessionmaker()
 _lock = Lock()
 
 
 class Account(Base):
-    addr = Column(String(1000), primary_key=True)
+    __tablename__ = "account"
+    id = Column(Integer, primary_key=True)
     user = Column(String(1000), nullable=False)
     url = Column(String(1000), nullable=False)
     token = Column(String(1000), nullable=False)
@@ -33,13 +27,15 @@ class Account(Base):
 
 
 class DmChat(Base):
+    __tablename__ = "dmchat"
     chat_id = Column(Integer, primary_key=True)
+    contactid = Column(Integer, ForeignKey("account.id"), nullable=False)
     contact = Column(String(1000), nullable=False)
-    acc_addr = Column(String(1000), ForeignKey("account.addr"), nullable=False)
 
 
 class OAuth(Base):
-    addr = Column(String(1000), primary_key=True)
+    __tablename__ = "oauth"
+    id = Column(Integer, primary_key=True)
     url = Column(String(1000), nullable=False)
     user = Column(String(1000))
     client_id = Column(String(1000), nullable=False)
@@ -47,6 +43,7 @@ class OAuth(Base):
 
 
 class Client(Base):
+    __tablename__ = "client"
     url = Column(String(1000), primary_key=True)
     id = Column(String(1000))
     secret = Column(String(1000))

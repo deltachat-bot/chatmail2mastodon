@@ -266,7 +266,7 @@ def _check_mastodon(bot: Bot, args: Namespace) -> None:
             for acc in session.query(Account):
                 instances.setdefault(acc.url, []).append(
                     (
-                        acc.addr,
+                        acc.id,
                         acc.token,
                         acc.home,
                         acc.last_home,
@@ -286,7 +286,7 @@ def _check_mastodon(bot: Bot, args: Namespace) -> None:
             )
             for key in list(instances.keys()):
                 (
-                    addr,
+                    conid,
                     token,
                     home_chat,
                     last_home,
@@ -299,22 +299,22 @@ def _check_mastodon(bot: Bot, args: Namespace) -> None:
                 if not instances[key]:
                     instances.pop(key)
                     instances_count -= 1
-                bot.logger.debug(f"{addr}: Checking account ({key})")
+                bot.logger.debug(f"contactid={conid}: Checking account ({key})")
                 try:
                     masto = get_mastodon(key, token)
                     _check_notifications(
-                        bot, accid, masto, addr, notif_chat, last_notif, muted_notif
+                        bot, accid, masto, conid, notif_chat, last_notif, muted_notif
                     )
                     if muted_home:
-                        bot.logger.debug(f"{addr}: Ignoring Home timeline (muted)")
+                        bot.logger.debug(f"contactid={conid}: Ignoring Home timeline (muted)")
                     else:
-                        _check_home(bot, accid, masto, addr, home_chat, last_home)
-                    bot.logger.debug(f"{addr}: Done checking account")
+                        _check_home(bot, accid, masto, conid, home_chat, last_home)
+                    bot.logger.debug(f"contactid={conid}: Done checking account")
                 except MastodonUnauthorizedError as ex:
                     bot.logger.exception(ex)
                     chats: List[int] = []
                     with session_scope() as session:
-                        acc = session.query(Account).filter_by(addr=addr).first()
+                        acc = session.query(Account).filter_by(id=conid).first()
                         if acc:
                             chats.extend(dmchat.chat_id for dmchat in acc.dm_chats)
                             chats.append(acc.home)
@@ -326,16 +326,14 @@ def _check_mastodon(bot: Bot, args: Namespace) -> None:
                         except JsonRpcError:
                             pass
 
-                    contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
-                    chatid = bot.rpc.create_chat_by_contact_id(accid, contactid)
+                    chatid = bot.rpc.create_chat_by_contact_id(accid, conid)
                     text = f"❌ ERROR Your account was logged out: {ex}"
                     bot.rpc.send_msg(accid, chatid, MsgData(text=text))
                 except (MastodonNetworkError, MastodonServerError) as ex:
                     bot.logger.exception(ex)
                 except Exception as ex:  # noqa
                     bot.logger.exception(ex)
-                    contactid = bot.rpc.lookup_contact_id_by_addr(accid, addr)
-                    chatid = bot.rpc.create_chat_by_contact_id(accid, contactid)
+                    chatid = bot.rpc.create_chat_by_contact_id(accid, conid)
                     text = f"❌ ERROR while checking your account: {ex}"
                     bot.rpc.send_msg(accid, chatid, MsgData(text=text))
             time.sleep(2)
@@ -413,8 +411,7 @@ def get_mastodon_from_msg(bot, accid, msg) -> Optional[Mastodon]:
 def get_account_from_msg(chat, msg, session) -> Optional[Account]:
     acc = get_account_from_chat(chat, session)
     if not acc:
-        addr = msg.sender.address
-        acc = session.query(Account).filter_by(addr=addr).first()
+        acc = session.query(Account).filter_by(id=msg.from_id).first()
     return acc
 
 
@@ -458,10 +455,10 @@ def _get_name(macc) -> str:
     return isbot + macc.acct
 
 
-def _handle_dms(bot: Bot, accid: int, dms: list, addr: str, notif_chat: int) -> None:
+def _handle_dms(bot: Bot, accid: int, dms: list, conid: int, notif_chat: int) -> None:
     def _get_chat_id(acct) -> int:
         with session_scope() as session:
-            dmchat = session.query(DmChat).filter_by(acc_addr=addr, contact=acct).first()
+            dmchat = session.query(DmChat).filter_by(contactid=conid, contact=acct).first()
             if dmchat:
                 chat_id = dmchat.chat_id
             else:
@@ -477,12 +474,12 @@ def _handle_dms(bot: Bot, accid: int, dms: list, addr: str, notif_chat: int) -> 
         if not chat_id:
             chat_id = bot.rpc.create_group_chat(accid, acct, False)
             chats[acct] = chat_id
-            for conid in bot.rpc.get_chat_contacts(accid, notif_chat):
-                if conid != SpecialContactId.SELF:
-                    bot.rpc.add_contact_to_chat(accid, chat_id, conid)
+            for cid in bot.rpc.get_chat_contacts(accid, notif_chat):
+                if cid != SpecialContactId.SELF:
+                    bot.rpc.add_contact_to_chat(accid, chat_id, cid)
 
             with session_scope() as session:
-                session.add(DmChat(chat_id=chat_id, contact=acct, acc_addr=addr))
+                session.add(DmChat(chat_id=chat_id, contact=acct, contactid=conid))
 
             try:
                 url = dm.account.avatar_static
@@ -516,18 +513,18 @@ def _check_notifications(
     bot: Bot,
     accid: int,
     masto: Mastodon,
-    addr: str,
+    conid: int,
     notif_chat: int,
     last_id: str,
     muted_notif: bool,
 ) -> None:
     dms = []
     notifications = []
-    bot.logger.debug(f"{addr}: Getting Notifications (last_id={last_id})")
+    bot.logger.debug(f"contactid={conid}: Getting Notifications (last_id={last_id})")
     toots = masto.notifications(min_id=last_id, limit=100)
     if toots:
         with session_scope() as session:
-            acc = session.query(Account).filter_by(addr=addr).first()
+            acc = session.query(Account).filter_by(id=conid).first()
             acc.last_notif = last_id = toots[0].id
         for toot in toots:
             if (
@@ -542,10 +539,12 @@ def _check_notifications(
                 notifications.append(toot)
 
     if dms:
-        bot.logger.debug(f"{addr}: Direct Messages: {len(dms)} new entries")
-        _handle_dms(bot, accid, dms, addr, notif_chat)
+        bot.logger.debug(f"contactid={conid}: Direct Messages: {len(dms)} new entries")
+        _handle_dms(bot, accid, dms, conid, notif_chat)
 
-    bot.logger.debug(f"{addr}: Notifications: {len(notifications)} new entries (last_id={last_id})")
+    bot.logger.debug(
+        f"contactid={conid}: Notifications: {len(notifications)} new entries (last_id={last_id})"
+    )
     if notifications:
         reblogs: dict[str, AttribAccessDict] = {}
         favs: dict[str, AttribAccessDict] = {}
@@ -571,17 +570,17 @@ def _check_notifications(
 
 
 def _check_home(
-    bot: Bot, accid: int, masto: Mastodon, addr: str, home_chat: int, last_id: str
+    bot: Bot, accid: int, masto: Mastodon, conid: int, home_chat: int, last_id: str
 ) -> None:
     me = masto.me()
-    bot.logger.debug(f"{addr}: Getting Home timeline (last_id={last_id})")
+    bot.logger.debug(f"contactid={conid}: Getting Home timeline (last_id={last_id})")
     toots = masto.timeline_home(min_id=last_id, limit=100)
     if toots:
         with session_scope() as session:
-            acc = session.query(Account).filter_by(addr=addr).first()
+            acc = session.query(Account).filter_by(id=conid).first()
             acc.last_home = last_id = toots[0].id
         toots = [toot for toot in toots if me.id not in [acc.id for acc in toot.mentions]]
-    bot.logger.debug(f"{addr}: Home: {len(toots)} new entries (last_id={last_id})")
+    bot.logger.debug(f"contactid={conid}: Home: {len(toots)} new entries (last_id={last_id})")
     if toots:
         for reply in toots2replies(bot, reversed(toots)):
             bot.rpc.send_msg(accid, home_chat, reply)
