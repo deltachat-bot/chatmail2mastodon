@@ -325,7 +325,11 @@ def _login(
     bot.rpc.send_msg(accid, hgroup, MsgData(text=text))
 
     bot.rpc.set_chat_profile_image(accid, ngroup, MASTODON_LOGO)
-    text = f"ℹ️ Here you will receive notifications for @{uname}@{url}"
+    text = (
+        "ℹ️ Here you will receive notifications for"
+        f" @{uname}@{url}\n\n"
+        "To mute follows, boosts and favorites, send /mute here."
+    )
     bot.rpc.send_msg(accid, ngroup, MsgData(text=text))
 
 
@@ -773,9 +777,9 @@ Use /login to log in, once you log in with your Mastodon credentials, two chats 
 /unfollow - Unfollow the user with the given account name or id. Example:
     /unfollow user@mastodon.social
 
-/mute - Mute the user with the given account name or id. If sent in the Home chat it will mute the Home timeline. Example:
+/mute - Mute the user with the given account name or id. If sent in the Home chat it will mute the Home timeline. If sent in the Notifications chat it will mute follows, boosts and favorites. Example:
     /mute user@mastodon.social
-    To mute Home timeline:
+    To mute Home/Notifications chat:
     /mute
 
 /unmute - Unmute the user with the given account name or id. If sent in the Home chat it will unmute the Home timeline. Example:
