@@ -76,7 +76,7 @@ def toots2replies(bot: Bot, toots: Iterable) -> Generator:
                 with download_file(reply.file) as path:
                     reply.file = path
                     yield reply
-                return
+                continue
             except Exception as ex:
                 bot.logger.exception(ex)
                 text = reply.text or ""
