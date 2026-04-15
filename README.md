@@ -19,7 +19,7 @@ pip install chatmail2mastodon
 To configure the bot:
 
 ```sh
-chatmail2mastodon init DCACCOUNT:https://nine.testrun.org/new
+chatmail2mastodon init dcaccount:nine.testrun.org
 ```
 
 **(Optional)** To customize the bot name, avatar and status/signature:

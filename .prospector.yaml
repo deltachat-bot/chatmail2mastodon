@@ -1,0 +1,28 @@
+strictness: medium
+test-warnings: true
+doc-warnings: false
+
+ignore-paths:
+  - docs
+  - build
+  - chatmail2mastodon/orm.py
+
+ignore-patterns:
+  - (^|/)skip(this)?(/|$)
+
+pycodestyle:
+  disable:
+    - E501
+
+pylint:
+  disable:
+    - too-many-locals
+    - line-too-long
+    - too-many-positional-arguments
+    - too-many-arguments
+
+mccabe:
+  run: false
+
+mypy:
+  run: true
